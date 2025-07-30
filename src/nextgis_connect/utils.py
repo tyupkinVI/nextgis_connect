@@ -10,7 +10,13 @@ from qgis.core import (
     QgsSettings,
 )
 from qgis.gui import QgisInterface
-from qgis.PyQt.QtCore import QByteArray, QLocale, QMimeData, QSize, Qt
+from qgis.PyQt.QtCore import (
+    QByteArray,
+    QLocale,
+    QMimeData,
+    QSize,
+    Qt,
+)
 from qgis.PyQt.QtGui import QClipboard, QIcon, QPainter, QPixmap
 from qgis.PyQt.QtSvg import QSvgRenderer
 from qgis.PyQt.QtWidgets import (
@@ -270,3 +276,4 @@ def material_icon(
     painter.end()
 
     return QIcon(pixmap)
+
