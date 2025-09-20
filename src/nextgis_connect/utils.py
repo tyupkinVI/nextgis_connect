@@ -2,6 +2,7 @@ import platform
 from enum import Enum, auto
 from itertools import islice
 from pathlib import Path
+import re
 from typing import Any, Optional, Tuple, Union, cast
 
 from qgis.core import (
@@ -290,41 +291,172 @@ class NGWQMLProcessor:
         self.doc = QDomDocument()
         self.doc.setContent(qml_xml_string)
 
-    def convert_label_to_ngw(self) -> None:
+        self.bool_fields_name: list[str] = [
+            field.name()
+            for field in self.layer.fields()
+            if field is not None and field.type() == QVariant.Bool
+        ]
+
+        self.pk_field_name = ""
+        self.need_check_pk = self.layer.providerType() == "ogr"
+        pk_attrs_indicies = self.layer.primaryKeyAttributes()
+        if self.need_check_pk and len(pk_attrs_indicies):
+            pk_field = self.layer.fields()[pk_attrs_indicies[0]]
+            if not pk_field.type() == QVariant.LongLong:
+                self.need_check_pk = False
+            else:
+                self.pk_field_name = pk_field.name()
+        else:
+            self.need_check_pk = False
+
+    def erase_simple_text(self, expression: str) -> Tuple[str, "list[str]"]:
+        parts = []
+
+        def replacer(match):
+            parts.append(match.group(0))
+            return f"$${len(parts) - 1}$$"
+
+        expression = re.sub(r"'[^']*'", replacer, expression)
+        return expression, parts
+
+    def restore_simple_text(self, expression: str, parts: "list[str]") -> str:
+        for i, part in enumerate(parts):
+            expression = expression.replace(f"$${i}$$", part, 1)
+        return expression
+
+    def process_label(self) -> None:
         labeling_nodes = self.doc.elementsByTagName("text-style")
         for i in range(labeling_nodes.count()):
-            labeling = labeling_nodes.at(i).toElement()
-            if not labeling.hasAttribute("fieldName"):
+            labeling_node = labeling_nodes.at(i).toElement()
+            if not labeling_node.hasAttribute("fieldName"):
                 continue
-            field_name = labeling.attribute("fieldName")
-            field = self.layer.fields().field(field_name)
-            if field is not None and field.type() == QVariant.Bool:
-                labeling.setAttribute("isExpression", "1")
-                labeling.setAttribute("fieldName", f'if("{field_name}", true, false)')
-                self.has_change = True
 
-    def convert_categorized_bool_to_int(self) -> None:
-        renderer_nodes = self.doc.elementsByTagName("renderer-v2")
-        for i in range(renderer_nodes.count()):
-            renderer = renderer_nodes.at(i).toElement()
-            if renderer.attribute("type") != "categorizedSymbol":
+            label_expression = labeling_node.attribute("fieldName")
+
+            if label_expression == "@id":
                 continue
-            categories = renderer.elementsByTagName("category")
-            for j in range(categories.count()):
-                category = categories.at(j).toElement()
-                if category.attribute("type") != "bool":
+
+            expression, parts = self.erase_simple_text(label_expression)
+
+            if self.need_check_pk:
+                expression, has_change = self.pk_to_id(expression)
+                self.has_change = self.has_change or has_change
+                if has_change:
+                    labeling_node.setAttribute("isExpression", "1")
+                    labeling_node.setAttribute("fieldName", expression)
+
+            for field_name in self.bool_fields_name:
+                expression, has_change = self.bool_to_int(
+                    field_name, expression
+                )
+                if has_change:
+                    labeling_node.setAttribute("isExpression", "1")
+                    labeling_node.setAttribute("fieldName", expression)
+                    self.has_change = self.has_change or has_change
+
+            expression = self.restore_simple_text(expression, parts)
+
+    def process_rules(self, renderer_node: QDomDocument) -> None:
+        rules_nodes = renderer_node.elementsByTagName("rules")
+        if rules_nodes.count() == 0:
+            return
+
+        rules_node = rules_nodes.at(0).toElement()
+        rule_nodes = rules_node.elementsByTagName("rule")
+        for j in range(rule_nodes.count()):
+            rule_node = rule_nodes.at(j).toElement()
+            filter_expr = rule_node.attribute("filter")
+            if not filter_expr:
+                continue
+
+            if not self.need_check_pk:
+                continue
+
+            expression, parts = self.erase_simple_text(filter_expr)
+            expression, has_change = self.pk_to_id(expression)
+            self.has_change = self.has_change or has_change
+            expression = self.restore_simple_text(expression, parts)
+
+            rule_node.setAttribute("filter", expression)
+
+    def process_categories(self, renderer_node: QDomDocument) -> None:
+        categories = renderer_node.elementsByTagName("category")
+        for j in range(categories.count()):
+            category = categories.at(j).toElement()
+            if not category.attribute("type") == "bool":
+                continue
+
+            category.setAttribute("type", "integer")
+            value = category.attribute("value")
+            if value.lower() == "true":
+                category.setAttribute("value", "1")
+            elif value.lower() == "false":
+                category.setAttribute("value", "0")
+            self.has_change = True
+
+    def process_user_defines(self) -> None:
+        if not self.need_check_pk:
+            return
+
+        data_defined_properties = self.doc.elementsByTagName(
+            "data_defined_properties"
+        )
+        for i in range(data_defined_properties.count()):
+            data_node = data_defined_properties.at(i).toElement()
+
+            options = data_node.elementsByTagName("Option")
+            for j in range(options.count()):
+                option = options.at(j).toElement()
+                if (
+                    not option.hasAttribute("name")
+                    or not option.attribute("name") == "expression"
+                ):
                     continue
-                category.setAttribute("type", "integer")
-                value = category.attribute("value")
-                if value.lower() == "true":
-                    category.setAttribute("value", "1")
-                elif value.lower() == "false":
-                    category.setAttribute("value", "0")
-                self.has_change = True
+
+                option_expression = option.attribute("value")
+
+                option_expression, parts = self.erase_simple_text(
+                    option_expression
+                )
+                option_expression, has_change = self.pk_to_id(
+                    option_expression
+                )
+                self.has_change = self.has_change or has_change
+                option.setAttribute("value", option_expression)
+
+                option_expression = self.restore_simple_text(
+                    option_expression, parts
+                )
+
+    def pk_to_id(self, expression: str) -> Tuple[str, bool]:
+        pattern = rf'"{re.escape(self.pk_field_name)}"|\b{re.escape(self.pk_field_name)}\b'
+        expression, count = re.subn(pattern, "@id", expression)
+        return expression, count > 0
+
+    def bool_to_int(
+        self, field_name: str, expression: str
+    ) -> Tuple[str, bool]:
+        pattern = rf'"{re.escape(field_name)}"|\b{re.escape(field_name)}\b'
+        label_expression, count = re.subn(
+            pattern, f'if("{field_name}", true, false)', expression
+        )
+        return label_expression, count > 0
 
     def process(self) -> str:
-        self.convert_label_to_ngw()
-        self.convert_categorized_bool_to_int()
+        renderers = self.doc.elementsByTagName("renderer-v2")
+        for i in range(renderers.count()):
+            renderer_node = renderers.at(i).toElement()
+
+            if renderer_node.hasAttribute("type"):
+                if renderer_node.attribute("type") == "categorizedSymbol":
+                    self.process_categories(renderer_node)
+                elif renderer_node.attribute("type") == "RuleRenderer":
+                    self.process_rules(renderer_node)
+
+            self.process_label()
+
+            self.process_user_defines()
+
         if not self.has_change:
             return self.qml
         return self.doc.toString()
