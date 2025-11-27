@@ -1074,6 +1074,10 @@ class NgConnectDock(QgsDockWidget, FORM_CLASS):
                     self.resources_tree_view.showWelcomeMessage()
                 return
 
+            conn = NgwConnectionsManager().current_connection
+            if conn is not None:
+                self.setWindowTitle(f"{NgConnectInterface.PLUGIN_NAME} - {conn.url.replace('https://', '').replace('http://', '')}")
+
             if (
                 HAS_NGSTD
                 and current_connection.method == "NextGIS"

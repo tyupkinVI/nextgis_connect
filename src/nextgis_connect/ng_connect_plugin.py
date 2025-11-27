@@ -351,9 +351,13 @@ class NgConnectPlugin(NgConnectInterface):
 
     def __init_ng_connect_dock(self) -> None:
         # Dock tree panel
-        self.__ng_resources_tree_dock = NgConnectDock(
-            self.PLUGIN_NAME, self.iface
-        )
+        title = NgConnectInterface.PLUGIN_NAME
+        conn = NgwConnectionsManager().current_connection
+        if conn is not None:
+            url = conn.url.replace("https://", "").replace("http://", "")
+            title += f" - {url}"
+
+        self.__ng_resources_tree_dock = NgConnectDock(title, self.iface)
         self.iface.addDockWidget(
             Qt.DockWidgetArea.RightDockWidgetArea,
             self.__ng_resources_tree_dock,

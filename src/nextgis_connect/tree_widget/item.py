@@ -69,7 +69,6 @@ class QNGWResourceItem(QModelItem):
         ):
             server_url = ngw_resource.connection.server_url
             server_url = urlparse(server_url).netloc
-            title += f" ({server_url})"
 
         self._title = title
         self._ngw_resource = ngw_resource
